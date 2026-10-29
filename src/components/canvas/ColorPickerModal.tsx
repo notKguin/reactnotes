@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import {
   Gesture,
@@ -6,7 +6,7 @@ import {
   GestureHandlerRootView,
 } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
-import Svg, { Circle, Path } from 'react-native-svg';
+import { Canvas, Circle, RadialGradient, SweepGradient } from '@shopify/react-native-skia';
 import { colors, spacing } from '../../theme';
 import { ValueSlider } from './ValueSlider';
 
@@ -21,8 +21,8 @@ type Mode = 'wheel' | 'rgb';
 
 const WHEEL_SIZE = 196;
 const WHEEL_RADIUS = WHEEL_SIZE / 2;
-const HUE_SLICES = 48;
-const SAT_RINGS = 6;
+const WHEEL_CENTER = { x: WHEEL_RADIUS, y: WHEEL_RADIUS };
+const HUE_STOPS = ['#FF0000', '#FFFF00', '#00FF00', '#00FFFF', '#0000FF', '#FF00FF', '#FF0000'];
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
   const clean = hex.replace('#', '').trim();
@@ -101,56 +101,20 @@ function rgbToHsv(r: number, g: number, b: number): { h: number; s: number; v: n
   return { h, s, v: max };
 }
 
-function sectorPath(
-  cx: number,
-  cy: number,
-  rInner: number,
-  rOuter: number,
-  a0: number,
-  a1: number,
-) {
-  const x0 = cx + rOuter * Math.cos(a0);
-  const y0 = cy + rOuter * Math.sin(a0);
-  const x1 = cx + rOuter * Math.cos(a1);
-  const y1 = cy + rOuter * Math.sin(a1);
-  if (rInner <= 0.5) {
-    return `M ${cx} ${cy} L ${x0} ${y0} A ${rOuter} ${rOuter} 0 0 1 ${x1} ${y1} Z`;
-  }
-  const x2 = cx + rInner * Math.cos(a1);
-  const y2 = cy + rInner * Math.sin(a1);
-  const x3 = cx + rInner * Math.cos(a0);
-  const y3 = cy + rInner * Math.sin(a0);
-  return `M ${x0} ${y0} A ${rOuter} ${rOuter} 0 0 1 ${x1} ${y1} L ${x2} ${y2} A ${rInner} ${rInner} 0 0 0 ${x3} ${y3} Z`;
-}
-
-const ColorWheelGraphic = memo(function ColorWheelGraphic({ val }: { val: number }) {
-  const cells = useMemo(() => {
-    const out: { key: string; d: string; fill: string }[] = [];
-    for (let ring = 0; ring < SAT_RINGS; ring += 1) {
-      const r0 = (ring / SAT_RINGS) * WHEEL_RADIUS;
-      const r1 = ((ring + 1) / SAT_RINGS) * WHEEL_RADIUS;
-      const sat = (ring + 0.65) / SAT_RINGS;
-      for (let i = 0; i < HUE_SLICES; i += 1) {
-        const a0 = (i / HUE_SLICES) * Math.PI * 2;
-        const a1 = ((i + 1.04) / HUE_SLICES) * Math.PI * 2;
-        const hue = (i / HUE_SLICES) * 360;
-        const { r, g, b } = hsvToRgb(hue, sat, val);
-        out.push({
-          key: `${ring}-${i}`,
-          d: sectorPath(WHEEL_RADIUS, WHEEL_RADIUS, r0, r1, a0, a1),
-          fill: rgbToHex(r, g, b),
-        });
-      }
-    }
-    return out;
-  }, [val]);
-
+const ColorWheelBase = memo(function ColorWheelBase() {
   return (
-    <Svg width={WHEEL_SIZE} height={WHEEL_SIZE}>
-      {cells.map((c) => (
-        <Path key={c.key} d={c.d} fill={c.fill} />
-      ))}
-    </Svg>
+    <Canvas style={{ width: WHEEL_SIZE, height: WHEEL_SIZE }} opaque={false}>
+      <Circle cx={WHEEL_RADIUS} cy={WHEEL_RADIUS} r={WHEEL_RADIUS}>
+        <SweepGradient c={WHEEL_CENTER} colors={HUE_STOPS} />
+      </Circle>
+      <Circle cx={WHEEL_RADIUS} cy={WHEEL_RADIUS} r={WHEEL_RADIUS}>
+        <RadialGradient
+          c={WHEEL_CENTER}
+          r={WHEEL_RADIUS}
+          colors={['#FFFFFF', 'rgba(255,255,255,0)']}
+        />
+      </Circle>
+    </Canvas>
   );
 });
 
@@ -167,7 +131,13 @@ export function ColorPickerModal({ visible, color, onChange, onClose }: Props) {
   const [v, setV] = useState(initialHsv.v || 1);
   const [hex, setHex] = useState(color.toUpperCase());
 
+  const vRef = useRef(v);
+  vRef.current = v;
+  const pending = useRef<{ h: number; s: number } | null>(null);
+  const frame = useRef<number | null>(null);
+
   useEffect(() => {
+    if (!visible) return;
     const nextRgb = hexToRgb(color);
     const nextHsv = rgbToHsv(nextRgb.r, nextRgb.g, nextRgb.b);
     setR(nextRgb.r);
@@ -177,208 +147,233 @@ export function ColorPickerModal({ visible, color, onChange, onClose }: Props) {
     setS(nextHsv.s);
     setV(nextHsv.v || 1);
     setHex(color.toUpperCase());
-    if (visible) setMode('wheel');
-  }, [color, visible]);
+    setMode('wheel');
+  }, [visible]);
 
-  const applyRgb = (nr: number, ng: number, nb: number) => {
+  const paint = (nr: number, ng: number, nb: number, hsv: { h: number; s: number; v: number }) => {
     setR(nr);
     setG(ng);
     setB(nb);
-    const hsv = rgbToHsv(nr, ng, nb);
     setH(hsv.h);
     setS(hsv.s);
     setV(hsv.v);
-    const nextHex = rgbToHex(nr, ng, nb);
-    setHex(nextHex);
-    onChange(nextHex);
+    setHex(rgbToHex(nr, ng, nb));
+  };
+
+  const applyRgb = (nr: number, ng: number, nb: number) => {
+    const hsv = rgbToHsv(nr, ng, nb);
+    paint(nr, ng, nb, hsv);
+    onChange(rgbToHex(nr, ng, nb));
   };
 
   const applyHsv = (nh: number, ns: number, nv: number) => {
-    setH(nh);
-    setS(ns);
-    setV(nv);
     const rgb = hsvToRgb(nh, ns, nv);
-    setR(rgb.r);
-    setG(rgb.g);
-    setB(rgb.b);
-    const nextHex = rgbToHex(rgb.r, rgb.g, rgb.b);
-    setHex(nextHex);
-    onChange(nextHex);
+    paint(rgb.r, rgb.g, rgb.b, { h: nh, s: ns, v: nv });
+    onChange(rgbToHex(rgb.r, rgb.g, rgb.b));
   };
 
-  const pickOnWheel = (x: number, y: number) => {
+  const previewWheel = (x: number, y: number) => {
     const dx = x - WHEEL_RADIUS;
     const dy = y - WHEEL_RADIUS;
     const dist = Math.min(WHEEL_RADIUS, Math.hypot(dx, dy));
     let angle = (Math.atan2(dy, dx) * 180) / Math.PI;
     if (angle < 0) angle += 360;
     const sat = Math.min(1, Math.max(0, dist / WHEEL_RADIUS));
-    applyHsv(angle, sat, v);
+    pending.current = { h: angle, s: sat };
+    if (frame.current != null) return;
+    frame.current = requestAnimationFrame(() => {
+      frame.current = null;
+      const next = pending.current;
+      if (!next) return;
+      const rgb = hsvToRgb(next.h, next.s, vRef.current);
+      paint(rgb.r, rgb.g, rgb.b, { h: next.h, s: next.s, v: vRef.current });
+    });
+  };
+
+  const commitWheel = () => {
+    if (frame.current != null) {
+      cancelAnimationFrame(frame.current);
+      frame.current = null;
+    }
+    const next = pending.current;
+    if (!next) return;
+    applyHsv(next.h, next.s, vRef.current);
   };
 
   const wheelGesture = Gesture.Pan()
     .minDistance(0)
     .onBegin((e) => {
-      runOnJS(pickOnWheel)(e.x, e.y);
+      runOnJS(previewWheel)(e.x, e.y);
     })
     .onUpdate((e) => {
-      runOnJS(pickOnWheel)(e.x, e.y);
+      runOnJS(previewWheel)(e.x, e.y);
+    })
+    .onEnd(() => {
+      runOnJS(commitWheel)();
     });
 
   const onHexInput = (text: string) => {
     const formatted = text.startsWith('#') ? text : `#${text}`;
     setHex(formatted.toUpperCase());
-    if (/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(formatted)) {
+    if (/^#([0-9A-Fa-f]{6})$/.test(formatted)) {
       const parsed = hexToRgb(formatted);
-      applyRgb(parsed.r, parsed.g, parsed.b);
+      const hsv = rgbToHsv(parsed.r, parsed.g, parsed.b);
+      setR(parsed.r);
+      setG(parsed.g);
+      setB(parsed.b);
+      setH(hsv.h);
+      setS(hsv.s);
+      setV(hsv.v);
+      onChange(rgbToHex(parsed.r, parsed.g, parsed.b));
     }
   };
 
   const rad = (h * Math.PI) / 180;
   const cursorX = WHEEL_RADIUS + Math.cos(rad) * s * WHEEL_RADIUS;
   const cursorY = WHEEL_RADIUS + Math.sin(rad) * s * WHEEL_RADIUS;
+  const currentHex = rgbToHex(r, g, b);
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <GestureHandlerRootView style={{ flex: 1 }}>
+      <GestureHandlerRootView style={styles.flex}>
         <Pressable style={styles.backdrop} onPress={onClose}>
           <Pressable style={styles.card} onPress={() => {}}>
-          <View style={styles.topRow}>
-            <View style={[styles.preview, { backgroundColor: rgbToHex(r, g, b) }]} />
-            <View style={styles.switchWrap}>
-              <Pressable
-                onPress={() => setMode('wheel')}
-                style={[styles.switchBtn, mode === 'wheel' && styles.switchBtnActive]}
-              >
-                <Text style={[styles.switchText, mode === 'wheel' && styles.switchTextActive]}>
-                  Круг
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setMode('rgb')}
-                style={[styles.switchBtn, mode === 'rgb' && styles.switchBtnActive]}
-              >
-                <Text style={[styles.switchText, mode === 'rgb' && styles.switchTextActive]}>
-                  RGB · HEX
-                </Text>
-              </Pressable>
+            <View style={styles.topRow}>
+              <View style={[styles.preview, { backgroundColor: currentHex }]} />
+              <View style={styles.switchWrap}>
+                <Pressable
+                  onPress={() => setMode('wheel')}
+                  style={[styles.switchBtn, mode === 'wheel' && styles.switchBtnActive]}
+                >
+                  <Text style={[styles.switchText, mode === 'wheel' && styles.switchTextActive]}>
+                    Круг
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setMode('rgb')}
+                  style={[styles.switchBtn, mode === 'rgb' && styles.switchBtnActive]}
+                >
+                  <Text style={[styles.switchText, mode === 'rgb' && styles.switchTextActive]}>
+                    RGB · HEX
+                  </Text>
+                </Pressable>
+              </View>
             </View>
-          </View>
 
-          {mode === 'wheel' ? (
-            <>
-              <GestureDetector gesture={wheelGesture}>
-                <View style={styles.wheelWrap}>
-                  <ColorWheelGraphic val={Math.max(0.15, v)} />
-                  <Svg
-                    width={WHEEL_SIZE}
-                    height={WHEEL_SIZE}
-                    style={StyleSheet.absoluteFill}
-                    pointerEvents="none"
-                  >
-                    <Circle
-                      cx={cursorX}
-                      cy={cursorY}
-                      r={8}
-                      stroke="#FFFFFF"
-                      strokeWidth={2.5}
-                      fill={rgbToHex(r, g, b)}
+            {mode === 'wheel' ? (
+              <>
+                <GestureDetector gesture={wheelGesture}>
+                  <View style={styles.wheelWrap}>
+                    <ColorWheelBase />
+                    <View
+                      pointerEvents="none"
+                      style={[
+                        styles.shade,
+                        { backgroundColor: `rgba(0,0,0,${1 - Math.max(0, Math.min(1, v))})` },
+                      ]}
                     />
-                  </Svg>
+                    <View
+                      pointerEvents="none"
+                      style={[
+                        styles.cursor,
+                        { left: cursorX - 9, top: cursorY - 9, backgroundColor: currentHex },
+                      ]}
+                    />
+                  </View>
+                </GestureDetector>
+
+                <View style={styles.sliders}>
+                  <ValueSlider
+                    label="Оттенок"
+                    value={Math.round(h)}
+                    min={0}
+                    max={360}
+                    suffix="°"
+                    onChange={(deg) => applyHsv(deg, s, v)}
+                  />
+                  <ValueSlider
+                    label="Насыщ."
+                    value={Math.round(s * 100)}
+                    min={0}
+                    max={100}
+                    suffix="%"
+                    onChange={(pct) => applyHsv(h, pct / 100, v)}
+                  />
+                  <ValueSlider
+                    label="Яркость"
+                    value={Math.round(v * 100)}
+                    min={0}
+                    max={100}
+                    suffix="%"
+                    onChange={(pct) => applyHsv(h, s, pct / 100)}
+                  />
                 </View>
-              </GestureDetector>
+              </>
+            ) : (
+              <>
+                <TextInput
+                  value={hex}
+                  onChangeText={onHexInput}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  maxLength={7}
+                  style={styles.hexInput}
+                  placeholder="#000000"
+                  placeholderTextColor={colors.textMuted}
+                />
+                <View style={styles.sliders}>
+                  <ValueSlider
+                    label="R"
+                    value={r}
+                    min={0}
+                    max={255}
+                    onChange={(val) => applyRgb(val, g, b)}
+                  />
+                  <ValueSlider
+                    label="G"
+                    value={g}
+                    min={0}
+                    max={255}
+                    onChange={(val) => applyRgb(r, val, b)}
+                  />
+                  <ValueSlider
+                    label="B"
+                    value={b}
+                    min={0}
+                    max={255}
+                    onChange={(val) => applyRgb(r, g, val)}
+                  />
+                  <ValueSlider
+                    label="Оттенок"
+                    value={Math.round(h)}
+                    min={0}
+                    max={360}
+                    suffix="°"
+                    onChange={(deg) => applyHsv(deg, s, v)}
+                  />
+                  <ValueSlider
+                    label="Насыщ."
+                    value={Math.round(s * 100)}
+                    min={0}
+                    max={100}
+                    suffix="%"
+                    onChange={(pct) => applyHsv(h, pct / 100, v)}
+                  />
+                  <ValueSlider
+                    label="Яркость"
+                    value={Math.round(v * 100)}
+                    min={0}
+                    max={100}
+                    suffix="%"
+                    onChange={(pct) => applyHsv(h, s, pct / 100)}
+                  />
+                </View>
+              </>
+            )}
 
-              <View style={styles.sliders}>
-                <ValueSlider
-                  label="Оттенок"
-                  value={Math.round(h)}
-                  min={0}
-                  max={360}
-                  suffix="°"
-                  onChange={(deg) => applyHsv(deg, s, v)}
-                />
-                <ValueSlider
-                  label="Насыщ."
-                  value={Math.round(s * 100)}
-                  min={0}
-                  max={100}
-                  suffix="%"
-                  onChange={(pct) => applyHsv(h, pct / 100, v)}
-                />
-                <ValueSlider
-                  label="Яркость"
-                  value={Math.round(v * 100)}
-                  min={0}
-                  max={100}
-                  suffix="%"
-                  onChange={(pct) => applyHsv(h, s, pct / 100)}
-                />
-              </View>
-            </>
-          ) : (
-            <>
-              <TextInput
-                value={hex}
-                onChangeText={onHexInput}
-                autoCapitalize="characters"
-                maxLength={7}
-                style={styles.hexInput}
-                placeholder="#000000"
-                placeholderTextColor={colors.textMuted}
-              />
-              <View style={styles.sliders}>
-                <ValueSlider
-                  label="R"
-                  value={r}
-                  min={0}
-                  max={255}
-                  onChange={(val) => applyRgb(val, g, b)}
-                />
-                <ValueSlider
-                  label="G"
-                  value={g}
-                  min={0}
-                  max={255}
-                  onChange={(val) => applyRgb(r, val, b)}
-                />
-                <ValueSlider
-                  label="B"
-                  value={b}
-                  min={0}
-                  max={255}
-                  onChange={(val) => applyRgb(r, g, val)}
-                />
-                <ValueSlider
-                  label="Оттенок"
-                  value={Math.round(h)}
-                  min={0}
-                  max={360}
-                  suffix="°"
-                  onChange={(deg) => applyHsv(deg, s, v)}
-                />
-                <ValueSlider
-                  label="Насыщ."
-                  value={Math.round(s * 100)}
-                  min={0}
-                  max={100}
-                  suffix="%"
-                  onChange={(pct) => applyHsv(h, pct / 100, v)}
-                />
-                <ValueSlider
-                  label="Яркость"
-                  value={Math.round(v * 100)}
-                  min={0}
-                  max={100}
-                  suffix="%"
-                  onChange={(pct) => applyHsv(h, s, pct / 100)}
-                />
-              </View>
-            </>
-          )}
-
-          <Pressable onPress={onClose} style={styles.doneBtn}>
-            <Text style={styles.doneText}>Готово</Text>
-          </Pressable>
+            <Pressable onPress={onClose} style={styles.doneBtn}>
+              <Text style={styles.doneText}>Готово</Text>
+            </Pressable>
           </Pressable>
         </Pressable>
       </GestureHandlerRootView>
@@ -387,6 +382,9 @@ export function ColorPickerModal({ visible, color, onChange, onClose }: Props) {
 }
 
 const styles = StyleSheet.create({
+  flex: {
+    flex: 1,
+  },
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(24,24,27,0.35)',
@@ -456,6 +454,17 @@ const styles = StyleSheet.create({
     borderRadius: WHEEL_RADIUS,
     overflow: 'hidden',
     marginVertical: 4,
+  },
+  shade: {
+    ...StyleSheet.absoluteFill,
+  },
+  cursor: {
+    position: 'absolute',
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 2,
+    borderColor: '#fff',
   },
   sliders: {
     alignItems: 'center',
