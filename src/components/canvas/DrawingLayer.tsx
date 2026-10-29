@@ -18,6 +18,10 @@ type Props = {
   lassoBox?: LassoBox | null;
   width: number;
   height: number;
+  livePath?: SharedValue<SkPath>;
+  liveColor?: SharedValue<string>;
+  liveWidth?: SharedValue<number>;
+  liveOpacity?: SharedValue<number>;
 };
 
 function lassoOutline(points: Point[]) {
@@ -36,6 +40,10 @@ export const DrawingLayer = memo(function DrawingLayer({
   lassoBox,
   width,
   height,
+  livePath,
+  liveColor,
+  liveWidth,
+  liveOpacity,
 }: Props) {
   const ink = useMemo(() => strokes.flatMap((stroke) => renderSkiaStroke(stroke)), [strokes]);
   const lasso = lassoPath && lassoPath.length > 1 ? lassoOutline(lassoPath) : null;
@@ -44,8 +52,20 @@ export const DrawingLayer = memo(function DrawingLayer({
     <Canvas
       style={{ position: 'absolute', left: 0, top: 0, width, height }}
       pointerEvents="none"
+      opaque={false}
     >
       {ink}
+      {livePath && liveColor && liveWidth && liveOpacity ? (
+        <Path
+          path={livePath}
+          color={liveColor}
+          style="stroke"
+          strokeWidth={liveWidth}
+          opacity={liveOpacity}
+          strokeCap="round"
+          strokeJoin="round"
+        />
+      ) : null}
       {lasso ? <Path path={lasso} color="rgba(63,63,70,0.06)" style="fill" /> : null}
       {lasso ? (
         <Path path={lasso} color="#3F3F46" style="stroke" strokeWidth={1.5}>
@@ -79,31 +99,3 @@ export const DrawingLayer = memo(function DrawingLayer({
     </Canvas>
   );
 });
-
-type LiveInkProps = {
-  path: SharedValue<SkPath>;
-  color: SharedValue<string>;
-  width: SharedValue<number>;
-  opacity: SharedValue<number>;
-  pageWidth: number;
-  pageHeight: number;
-};
-
-export function LiveInk({ path, color, width, opacity, pageWidth, pageHeight }: LiveInkProps) {
-  return (
-    <Canvas
-      style={{ position: 'absolute', left: 0, top: 0, width: pageWidth, height: pageHeight }}
-      pointerEvents="none"
-    >
-      <Path
-        path={path}
-        color={color}
-        style="stroke"
-        strokeWidth={width}
-        opacity={opacity}
-        strokeCap="round"
-        strokeJoin="round"
-      />
-    </Canvas>
-  );
-}

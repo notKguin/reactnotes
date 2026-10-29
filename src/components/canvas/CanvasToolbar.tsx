@@ -570,16 +570,6 @@ export function CanvasToolbar(props: Props) {
             showTip('background');
           }}
         />
-        <ToolBtn
-          name="format-font"
-          set="mci"
-          label="Шрифт"
-          active={panel === 'fonts'}
-          onPress={() => {
-            togglePanel('fonts');
-            showTip('font');
-          }}
-        />
         {hasImageSelection ? (
           <ToolBtn
             name="crop-outline"
@@ -957,7 +947,7 @@ export function CanvasToolbar(props: Props) {
               <Ionicons name="color-palette-outline" size={16} color={colors.toolIdle} />
             </Pressable>
           </ScrollView>
-        ) : (hasTextSelection || tool === 'text') && textStyle ? (
+        ) : hasTextSelection && textStyle ? (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.inline}>
             <Pressable
               style={styles.chip}

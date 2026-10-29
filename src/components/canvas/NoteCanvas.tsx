@@ -60,7 +60,7 @@ import type {
 } from '../../types';
 import { BackgroundLayer } from './BackgroundLayer';
 import { CanvasToolbar } from './CanvasToolbar';
-import { DrawingLayer, LiveInk } from './DrawingLayer';
+import { DrawingLayer } from './DrawingLayer';
 import { ImageBlock } from './ImageBlock';
 import { ImageCropModal } from './ImageCropModal';
 import { LayersPanel } from './LayersPanel';
@@ -431,6 +431,8 @@ export function NoteCanvas({
     return chunks;
   }, [layers, renderStrokes, lassoIds, note.elements]);
 
+  const liveHostKey = [...renderChunks].reverse().find((item) => item.kind === 'strokes')?.key ?? null;
+
   const selectedLassoStrokes = useMemo(
     () => renderStrokes.filter((s) => lassoIds.has(s.id)),
     [renderStrokes, lassoIds],
@@ -581,7 +583,7 @@ export function NoteCanvas({
       x,
       y,
       width: isTablet ? 340 : 220,
-      height: 80,
+      height: Math.round(textDefaults.fontSize * 1.45 + 12),
       text: '',
       fontFamily: textDefaults.fontFamily,
       fontSize: textDefaults.fontSize,
@@ -1323,9 +1325,13 @@ export function NoteCanvas({
     const prevSize = Math.max(1, selectedText.fontSize);
     const ratio = fontSize / prevSize;
     const width = Math.max(80, Math.min(1400, selectedText.width * ratio));
+    const height = Math.max(
+      28,
+      Math.min(1400, (selectedText.height ?? Math.round(prevSize * 1.45 + 12)) * ratio),
+    );
     updateElements(
       elementsRef.current.map((e) =>
-        e.id === selectedText.id ? { ...e, fontSize, width } : e,
+        e.id === selectedText.id ? { ...e, fontSize, width, height } : e,
       ),
     );
   };
@@ -1586,12 +1592,17 @@ export function NoteCanvas({
               {/* Отрисовка по слоям и строго в хронологическом порядке (по старости) внутри каждого слоя */}
               {renderChunks.map((chunk) => {
                 if (chunk.kind === 'strokes') {
+                  const isLiveHost = chunk.key === liveHostKey;
                   return (
                     <DrawingLayer
                       key={chunk.key}
                       strokes={chunk.strokes}
                       width={pageSize.width}
                       height={pageSize.height}
+                      livePath={isLiveHost ? livePath : undefined}
+                      liveColor={isLiveHost ? liveColor : undefined}
+                      liveWidth={isLiveHost ? liveWidth : undefined}
+                      liveOpacity={isLiveHost ? liveOpacity : undefined}
                     />
                   );
                 }
@@ -1679,6 +1690,18 @@ export function NoteCanvas({
                 );
               })}
 
+              {liveHostKey == null ? (
+                <DrawingLayer
+                  strokes={[]}
+                  width={pageSize.width}
+                  height={pageSize.height}
+                  livePath={livePath}
+                  liveColor={liveColor}
+                  liveWidth={liveWidth}
+                  liveOpacity={liveOpacity}
+                />
+              ) : null}
+
               {/* Контур лассо / прямоугольного выделения */}
               {lassoPath || lassoRect ? (
                 <DrawingLayer
@@ -1710,14 +1733,6 @@ export function NoteCanvas({
                   }}
                 />
               ) : null}
-              <LiveInk
-                path={livePath}
-                color={liveColor}
-                width={liveWidth}
-                opacity={liveOpacity}
-                pageWidth={pageSize.width}
-                pageHeight={pageSize.height}
-              />
             </ViewShot>
           </Animated.View>
           </View>
