@@ -1,14 +1,18 @@
-import { memo, useEffect, useRef, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { memo, useEffect, useState } from 'react';
+import { LayoutChangeEvent, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import {
   Gesture,
   GestureDetector,
   GestureHandlerRootView,
 } from 'react-native-gesture-handler';
-import { runOnJS } from 'react-native-reanimated';
+import Animated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  type SharedValue,
+} from 'react-native-reanimated';
 import { Canvas, Circle, RadialGradient, SweepGradient } from '@shopify/react-native-skia';
 import { colors, spacing } from '../../theme';
-import { ValueSlider } from './ValueSlider';
 
 type Props = {
   visible: boolean;
@@ -51,6 +55,7 @@ function rgbToHex(r: number, g: number, b: number): string {
 }
 
 function hsvToRgb(h: number, s: number, v: number): { r: number; g: number; b: number } {
+  'worklet';
   const c = v * s;
   const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
   const m = v - c;
@@ -84,6 +89,7 @@ function hsvToRgb(h: number, s: number, v: number): { r: number; g: number; b: n
 }
 
 function rgbToHsv(r: number, g: number, b: number): { h: number; s: number; v: number } {
+  'worklet';
   const rn = r / 255;
   const gn = g / 255;
   const bn = b / 255;
@@ -99,6 +105,17 @@ function rgbToHsv(r: number, g: number, b: number): { h: number; s: number; v: n
   if (h < 0) h += 360;
   const s = max === 0 ? 0 : d / max;
   return { h, s, v: max };
+}
+
+function hsvToHex(h: number, s: number, v: number) {
+  'worklet';
+  const { r, g, b } = hsvToRgb(h, s, v);
+  const channel = (n: number) => {
+    const clamped = Math.max(0, Math.min(255, Math.round(n)));
+    const chars = '0123456789ABCDEF';
+    return chars[Math.floor(clamped / 16)] + chars[clamped % 16];
+  };
+  return `#${channel(r)}${channel(g)}${channel(b)}`;
 }
 
 const ColorWheelBase = memo(function ColorWheelBase() {
@@ -118,6 +135,77 @@ const ColorWheelBase = memo(function ColorWheelBase() {
   );
 });
 
+function SmoothSlider({
+  label,
+  value,
+  shared,
+  min,
+  max,
+  step = 1,
+  suffix = '',
+  onLive,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  shared: SharedValue<number>;
+  min: number;
+  max: number;
+  step?: number;
+  suffix?: string;
+  onLive?: (value: number) => void;
+  onCommit: (value: number) => void;
+}) {
+  const widthSv = useSharedValue(140);
+  const onLayout = (e: LayoutChangeEvent) => {
+    widthSv.value = Math.max(60, e.nativeEvent.layout.width);
+  };
+  const fillStyle = useAnimatedStyle(() => {
+    const ratio = Math.min(1, Math.max(0, (shared.value - min) / Math.max(1e-6, max - min)));
+    return { width: ratio * widthSv.value };
+  });
+  const thumbStyle = useAnimatedStyle(() => {
+    const ratio = Math.min(1, Math.max(0, (shared.value - min) / Math.max(1e-6, max - min)));
+    return { left: ratio * Math.max(0, widthSv.value - 18) };
+  });
+  const gesture = Gesture.Pan()
+    .minDistance(0)
+    .hitSlop(8)
+    .onBegin((e) => {
+      const ratio = Math.min(1, Math.max(0, e.x / Math.max(1, widthSv.value)));
+      shared.value = min + ratio * (max - min);
+      if (onLive) onLive(shared.value);
+    })
+    .onUpdate((e) => {
+      const ratio = Math.min(1, Math.max(0, e.x / Math.max(1, widthSv.value)));
+      shared.value = min + ratio * (max - min);
+      if (onLive) onLive(shared.value);
+    })
+    .onEnd(() => {
+      const next = Math.round(shared.value / step) * step;
+      const clamped = Math.min(max, Math.max(min, next));
+      shared.value = clamped;
+      runOnJS(onCommit)(clamped);
+    });
+
+  return (
+    <View style={styles.sliderWrap}>
+      <Text style={styles.sliderLabel}>
+        {label}: {Math.round(value)}
+        {suffix}
+      </Text>
+      <GestureDetector gesture={gesture}>
+        <View style={styles.trackHit} onLayout={onLayout}>
+          <View style={styles.track}>
+            <Animated.View style={[styles.fill, fillStyle]} />
+          </View>
+          <Animated.View style={[styles.thumb, thumbStyle]} />
+        </View>
+      </GestureDetector>
+    </View>
+  );
+}
+
 export function ColorPickerModal({ visible, color, onChange, onClose }: Props) {
   const initialRgb = hexToRgb(color);
   const initialHsv = rgbToHsv(initialRgb.r, initialRgb.g, initialRgb.b);
@@ -130,23 +218,31 @@ export function ColorPickerModal({ visible, color, onChange, onClose }: Props) {
   const [s, setS] = useState(initialHsv.s);
   const [v, setV] = useState(initialHsv.v || 1);
   const [hex, setHex] = useState(color.toUpperCase());
-
-  const vRef = useRef(v);
-  vRef.current = v;
-  const pending = useRef<{ h: number; s: number } | null>(null);
-  const frame = useRef<number | null>(null);
+  const hue = useSharedValue(initialHsv.h);
+  const sat = useSharedValue(initialHsv.s);
+  const val = useSharedValue(initialHsv.v || 1);
+  const red = useSharedValue(initialRgb.r);
+  const green = useSharedValue(initialRgb.g);
+  const blue = useSharedValue(initialRgb.b);
 
   useEffect(() => {
     if (!visible) return;
     const nextRgb = hexToRgb(color);
     const nextHsv = rgbToHsv(nextRgb.r, nextRgb.g, nextRgb.b);
+    const nextV = nextHsv.v || 1;
     setR(nextRgb.r);
     setG(nextRgb.g);
     setB(nextRgb.b);
     setH(nextHsv.h);
     setS(nextHsv.s);
-    setV(nextHsv.v || 1);
+    setV(nextV);
     setHex(color.toUpperCase());
+    hue.value = nextHsv.h;
+    sat.value = nextHsv.s;
+    val.value = nextV;
+    red.value = nextRgb.r;
+    green.value = nextRgb.g;
+    blue.value = nextRgb.b;
     setMode('wheel');
   }, [visible]);
 
@@ -157,6 +253,12 @@ export function ColorPickerModal({ visible, color, onChange, onClose }: Props) {
     setH(hsv.h);
     setS(hsv.s);
     setV(hsv.v);
+    hue.value = hsv.h;
+    sat.value = hsv.s;
+    val.value = hsv.v;
+    red.value = nr;
+    green.value = ng;
+    blue.value = nb;
     setHex(rgbToHex(nr, ng, nb));
   };
 
@@ -172,44 +274,27 @@ export function ColorPickerModal({ visible, color, onChange, onClose }: Props) {
     onChange(rgbToHex(rgb.r, rgb.g, rgb.b));
   };
 
-  const previewWheel = (x: number, y: number) => {
+  const placeOnWheel = (x: number, y: number) => {
+    'worklet';
     const dx = x - WHEEL_RADIUS;
     const dy = y - WHEEL_RADIUS;
     const dist = Math.min(WHEEL_RADIUS, Math.hypot(dx, dy));
     let angle = (Math.atan2(dy, dx) * 180) / Math.PI;
     if (angle < 0) angle += 360;
-    const sat = Math.min(1, Math.max(0, dist / WHEEL_RADIUS));
-    pending.current = { h: angle, s: sat };
-    if (frame.current != null) return;
-    frame.current = requestAnimationFrame(() => {
-      frame.current = null;
-      const next = pending.current;
-      if (!next) return;
-      const rgb = hsvToRgb(next.h, next.s, vRef.current);
-      paint(rgb.r, rgb.g, rgb.b, { h: next.h, s: next.s, v: vRef.current });
-    });
-  };
-
-  const commitWheel = () => {
-    if (frame.current != null) {
-      cancelAnimationFrame(frame.current);
-      frame.current = null;
-    }
-    const next = pending.current;
-    if (!next) return;
-    applyHsv(next.h, next.s, vRef.current);
+    hue.value = angle;
+    sat.value = Math.min(1, Math.max(0, dist / WHEEL_RADIUS));
   };
 
   const wheelGesture = Gesture.Pan()
     .minDistance(0)
     .onBegin((e) => {
-      runOnJS(previewWheel)(e.x, e.y);
+      placeOnWheel(e.x, e.y);
     })
     .onUpdate((e) => {
-      runOnJS(previewWheel)(e.x, e.y);
+      placeOnWheel(e.x, e.y);
     })
     .onEnd(() => {
-      runOnJS(commitWheel)();
+      runOnJS(applyHsv)(hue.value, sat.value, val.value);
     });
 
   const onHexInput = (text: string) => {
@@ -224,14 +309,30 @@ export function ColorPickerModal({ visible, color, onChange, onClose }: Props) {
       setH(hsv.h);
       setS(hsv.s);
       setV(hsv.v);
+      hue.value = hsv.h;
+      sat.value = hsv.s;
+      val.value = hsv.v;
+      red.value = parsed.r;
+      green.value = parsed.g;
+      blue.value = parsed.b;
       onChange(rgbToHex(parsed.r, parsed.g, parsed.b));
     }
   };
 
-  const rad = (h * Math.PI) / 180;
-  const cursorX = WHEEL_RADIUS + Math.cos(rad) * s * WHEEL_RADIUS;
-  const cursorY = WHEEL_RADIUS + Math.sin(rad) * s * WHEEL_RADIUS;
-  const currentHex = rgbToHex(r, g, b);
+  const cursorStyle = useAnimatedStyle(() => {
+    const rad = (hue.value * Math.PI) / 180;
+    return {
+      left: WHEEL_RADIUS + Math.cos(rad) * sat.value * WHEEL_RADIUS - 9,
+      top: WHEEL_RADIUS + Math.sin(rad) * sat.value * WHEEL_RADIUS - 9,
+      backgroundColor: hsvToHex(hue.value, sat.value, val.value),
+    };
+  });
+  const shadeStyle = useAnimatedStyle(() => ({
+    opacity: 1 - Math.max(0, Math.min(1, val.value)),
+  }));
+  const previewStyle = useAnimatedStyle(() => ({
+    backgroundColor: hsvToHex(hue.value, sat.value, val.value),
+  }));
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -239,7 +340,7 @@ export function ColorPickerModal({ visible, color, onChange, onClose }: Props) {
         <Pressable style={styles.backdrop} onPress={onClose}>
           <Pressable style={styles.card} onPress={() => {}}>
             <View style={styles.topRow}>
-              <View style={[styles.preview, { backgroundColor: currentHex }]} />
+              <Animated.View style={[styles.preview, previewStyle]} />
               <View style={styles.switchWrap}>
                 <Pressable
                   onPress={() => setMode('wheel')}
@@ -265,47 +366,40 @@ export function ColorPickerModal({ visible, color, onChange, onClose }: Props) {
                 <GestureDetector gesture={wheelGesture}>
                   <View style={styles.wheelWrap}>
                     <ColorWheelBase />
-                    <View
-                      pointerEvents="none"
-                      style={[
-                        styles.shade,
-                        { backgroundColor: `rgba(0,0,0,${1 - Math.max(0, Math.min(1, v))})` },
-                      ]}
-                    />
-                    <View
-                      pointerEvents="none"
-                      style={[
-                        styles.cursor,
-                        { left: cursorX - 9, top: cursorY - 9, backgroundColor: currentHex },
-                      ]}
-                    />
+                    <Animated.View pointerEvents="none" style={[styles.shade, shadeStyle]} />
+                    <Animated.View pointerEvents="none" style={[styles.cursor, cursorStyle]} />
                   </View>
                 </GestureDetector>
 
                 <View style={styles.sliders}>
-                  <ValueSlider
+                  <SmoothSlider
                     label="Оттенок"
                     value={Math.round(h)}
+                    shared={hue}
                     min={0}
                     max={360}
                     suffix="°"
-                    onChange={(deg) => applyHsv(deg, s, v)}
+                    onCommit={(deg) => applyHsv(deg, sat.value, val.value)}
                   />
-                  <ValueSlider
+                  <SmoothSlider
                     label="Насыщ."
                     value={Math.round(s * 100)}
+                    shared={sat}
                     min={0}
-                    max={100}
+                    max={1}
+                    step={0.01}
                     suffix="%"
-                    onChange={(pct) => applyHsv(h, pct / 100, v)}
+                    onCommit={(ns) => applyHsv(hue.value, ns, val.value)}
                   />
-                  <ValueSlider
+                  <SmoothSlider
                     label="Яркость"
                     value={Math.round(v * 100)}
+                    shared={val}
                     min={0}
-                    max={100}
+                    max={1}
+                    step={0.01}
                     suffix="%"
-                    onChange={(pct) => applyHsv(h, s, pct / 100)}
+                    onCommit={(nv) => applyHsv(hue.value, sat.value, nv)}
                   />
                 </View>
               </>
@@ -322,50 +416,79 @@ export function ColorPickerModal({ visible, color, onChange, onClose }: Props) {
                   placeholderTextColor={colors.textMuted}
                 />
                 <View style={styles.sliders}>
-                  <ValueSlider
+                  <SmoothSlider
                     label="R"
                     value={r}
+                    shared={red}
                     min={0}
                     max={255}
-                    onChange={(val) => applyRgb(val, g, b)}
+                    onLive={(nr) => {
+                      'worklet';
+                      const hsv = rgbToHsv(nr, green.value, blue.value);
+                      hue.value = hsv.h;
+                      sat.value = hsv.s;
+                      val.value = hsv.v;
+                    }}
+                    onCommit={(nr) => applyRgb(nr, green.value, blue.value)}
                   />
-                  <ValueSlider
+                  <SmoothSlider
                     label="G"
                     value={g}
+                    shared={green}
                     min={0}
                     max={255}
-                    onChange={(val) => applyRgb(r, val, b)}
+                    onLive={(ng) => {
+                      'worklet';
+                      const hsv = rgbToHsv(red.value, ng, blue.value);
+                      hue.value = hsv.h;
+                      sat.value = hsv.s;
+                      val.value = hsv.v;
+                    }}
+                    onCommit={(ng) => applyRgb(red.value, ng, blue.value)}
                   />
-                  <ValueSlider
+                  <SmoothSlider
                     label="B"
                     value={b}
+                    shared={blue}
                     min={0}
                     max={255}
-                    onChange={(val) => applyRgb(r, g, val)}
+                    onLive={(nb) => {
+                      'worklet';
+                      const hsv = rgbToHsv(red.value, green.value, nb);
+                      hue.value = hsv.h;
+                      sat.value = hsv.s;
+                      val.value = hsv.v;
+                    }}
+                    onCommit={(nb) => applyRgb(red.value, green.value, nb)}
                   />
-                  <ValueSlider
+                  <SmoothSlider
                     label="Оттенок"
                     value={Math.round(h)}
+                    shared={hue}
                     min={0}
                     max={360}
                     suffix="°"
-                    onChange={(deg) => applyHsv(deg, s, v)}
+                    onCommit={(deg) => applyHsv(deg, sat.value, val.value)}
                   />
-                  <ValueSlider
+                  <SmoothSlider
                     label="Насыщ."
                     value={Math.round(s * 100)}
+                    shared={sat}
                     min={0}
-                    max={100}
+                    max={1}
+                    step={0.01}
                     suffix="%"
-                    onChange={(pct) => applyHsv(h, pct / 100, v)}
+                    onCommit={(ns) => applyHsv(hue.value, ns, val.value)}
                   />
-                  <ValueSlider
+                  <SmoothSlider
                     label="Яркость"
                     value={Math.round(v * 100)}
+                    shared={val}
                     min={0}
-                    max={100}
+                    max={1}
+                    step={0.01}
                     suffix="%"
-                    onChange={(pct) => applyHsv(h, s, pct / 100)}
+                    onCommit={(nv) => applyHsv(hue.value, sat.value, nv)}
                   />
                 </View>
               </>
@@ -457,6 +580,7 @@ const styles = StyleSheet.create({
   },
   shade: {
     ...StyleSheet.absoluteFill,
+    backgroundColor: '#000',
   },
   cursor: {
     position: 'absolute',
@@ -469,6 +593,36 @@ const styles = StyleSheet.create({
   sliders: {
     alignItems: 'center',
     gap: 6,
+  },
+  sliderWrap: {
+    width: 220,
+  },
+  sliderLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.textMuted,
+    marginBottom: 4,
+  },
+  trackHit: {
+    height: 28,
+    justifyContent: 'center',
+  },
+  track: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.surfaceMuted,
+    overflow: 'hidden',
+  },
+  fill: {
+    height: '100%',
+    backgroundColor: colors.accent,
+  },
+  thumb: {
+    position: 'absolute',
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: colors.accent,
   },
   doneBtn: {
     backgroundColor: colors.accent,
