@@ -17,6 +17,7 @@ import Animated, {
   useAnimatedStyle,
   useSharedValue,
 } from 'react-native-reanimated';
+import { notifyChange, Skia } from '@shopify/react-native-skia';
 import ViewShot, { type ViewShotRef } from 'react-native-view-shot';
 import { getBackground } from '../../backgrounds';
 import { exportCanvasAsPdf, exportCanvasAsPng } from '../../exportNote';
@@ -29,7 +30,6 @@ import {
   dist,
   eraseStrokesPartial,
   eraseStrokesWhole,
-  pressureToWidth,
   smoothPoints,
   strokeInsidePolygon,
   strokeInsideRect,
@@ -60,7 +60,7 @@ import type {
 } from '../../types';
 import { BackgroundLayer } from './BackgroundLayer';
 import { CanvasToolbar } from './CanvasToolbar';
-import { DrawingLayer } from './DrawingLayer';
+import { DrawingLayer, LiveInk } from './DrawingLayer';
 import { ImageBlock } from './ImageBlock';
 import { ImageCropModal } from './ImageCropModal';
 import { LayersPanel } from './LayersPanel';
@@ -175,7 +175,6 @@ export function NoteCanvas({
   const [notice, setNotice] = useState<string | null>(null);
   const [cropping, setCropping] = useState(false);
   const [renderStrokes, setRenderStrokes] = useState<Stroke[]>(note.strokes);
-  const [liveStroke, setLiveStroke] = useState<Stroke | null>(null);
 
   const layers = useMemo<LayerItem[]>(
     () => (note.layers && note.layers.length > 0 ? note.layers : [createDefaultLayer()]),
@@ -221,14 +220,41 @@ export function NoteCanvas({
   const toolConfigsRef = useRef(toolConfigs);
   const stylusOnlyRef = useRef(stylusOnly);
   const eraseSnapshotTakenRef = useRef(false);
+  const erasePaintAt = useRef(0);
   const lassoIdsRef = useRef<Set<string>>(new Set());
   const lassoPathRef = useRef<Point[]>([]);
   const pinchingRef = useRef(false);
   const zoomRef = useRef(1);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canvasScale = useSharedValue(1);
+  const drawMode = useSharedValue(0);
+  const canInk = useSharedValue(1);
+  const stylusOnlySv = useSharedValue(0);
+  const penColorSv = useSharedValue('#171717');
+  const penWidthSv = useSharedValue(4);
+  const penOpacitySv = useSharedValue(1);
+  const hiColorSv = useSharedValue('#CA8A04');
+  const hiWidthSv = useSharedValue(18);
+  const hiOpacitySv = useSharedValue(0.35);
+  const liveBuilder = useSharedValue(Skia.PathBuilder.Make());
+  const livePath = useSharedValue(Skia.PathBuilder.Make().detach());
+  const liveColor = useSharedValue('#171717');
+  const liveWidth = useSharedValue(4);
+  const liveOpacity = useSharedValue(1);
+  const livePts = useSharedValue<Point[]>([]);
+  const inking = useSharedValue(0);
   zoomRef.current = zoomFactor;
   canvasScale.value = zoomFactor;
+  drawMode.value =
+    tool === 'pen' ? 1 : tool === 'highlighter' ? 2 : tool === 'shape' ? 3 : tool === 'eraser' ? 4 : tool === 'lasso' ? 5 : 0;
+  canInk.value = activeLayer.visible && !activeLayer.locked ? 1 : 0;
+  stylusOnlySv.value = stylusOnly ? 1 : 0;
+  penColorSv.value = toolConfigs.pen.color;
+  penWidthSv.value = toolConfigs.pen.width;
+  penOpacitySv.value = toolConfigs.pen.opacity;
+  hiColorSv.value = toolConfigs.highlighter.color;
+  hiWidthSv.value = toolConfigs.highlighter.width;
+  hiOpacitySv.value = toolConfigs.highlighter.opacity;
 
   elementsRef.current = note.elements;
   layersRef.current = layers;
@@ -260,8 +286,11 @@ export function NoteCanvas({
 
   useEffect(() => {
     setSelectedId(null);
-    setLiveStroke(null);
     strokeRef.current = null;
+    inking.value = 0;
+    livePts.value = [];
+    liveBuilder.value.reset();
+    livePath.value = liveBuilder.value.build();
     setUndoStack([]);
     setRedoStack([]);
     setLassoIds(new Set());
@@ -362,14 +391,6 @@ export function NoteCanvas({
         }
       }
 
-      if (liveStroke && (liveStroke.layerId ?? activeLayerId) === layer.id) {
-        items.push({
-          kind: 'stroke',
-          order: liveStroke.order ?? Number.MAX_SAFE_INTEGER,
-          stroke: liveStroke,
-        });
-      }
-
       for (const el of note.elements) {
         const lid = el.layerId ?? defaultLayerId;
         if (lid === layer.id) {
@@ -408,7 +429,7 @@ export function NoteCanvas({
     }
 
     return chunks;
-  }, [layers, renderStrokes, lassoIds, liveStroke, activeLayerId, note.elements]);
+  }, [layers, renderStrokes, lassoIds, note.elements]);
 
   const selectedLassoStrokes = useMemo(
     () => renderStrokes.filter((s) => lassoIds.has(s.id)),
@@ -788,8 +809,35 @@ export function NoteCanvas({
       const others = prev.filter((s) => (s.layerId ?? defaultId) !== curLayer.id);
       const next = [...others, ...erasedActive];
       strokesRef.current = next;
-      setRenderStrokes(next);
+      const now = Date.now();
+      if (now - erasePaintAt.current > 16) {
+        erasePaintAt.current = now;
+        setRenderStrokes(strokesRef.current);
+      }
     }
+  };
+
+  const paintLive = (pts: Point[], color: string, width: number, opacity: number) => {
+    const b = Skia.PathBuilder.Make();
+    if (pts.length > 0) {
+      b.moveTo(pts[0].x, pts[0].y);
+      if (pts.length === 1) {
+        b.lineTo(pts[0].x + 0.1, pts[0].y + 0.1);
+      } else {
+        for (let i = 1; i < pts.length; i += 1) b.lineTo(pts[i].x, pts[i].y);
+      }
+    }
+    liveColor.value = color;
+    liveWidth.value = width;
+    liveOpacity.value = opacity;
+    livePath.value = b.detach();
+  };
+
+  const clearLivePath = () => {
+    inking.value = 0;
+    livePts.value = [];
+    liveBuilder.value.reset();
+    livePath.value = liveBuilder.value.build();
   };
 
   const allowedPointer = (pointerType?: number) => {
@@ -858,25 +906,9 @@ export function NoteCanvas({
         order: getNextOrder(),
       };
       strokeRef.current = stroke;
-      setLiveStroke(stroke);
+      paintLive(stroke.points, cfg.color, cfg.width, cfg.opacity);
       return;
     }
-    if (currentTool !== 'pen' && currentTool !== 'highlighter') return;
-
-    const cfg = toolConfigsRef.current[currentTool];
-    const isHighlighter = currentTool === 'highlighter';
-    const width = isHighlighter ? cfg.width : pressureToWidth(cfg.width, pressure);
-    const stroke: Stroke = {
-      id: uid('stroke'),
-      points: [{ x, y, width, pressure: pressure ?? undefined }],
-      color: cfg.color,
-      width: cfg.width,
-      opacity: cfg.opacity,
-      layerId: curLayer.id,
-      order: getNextOrder(),
-    };
-    strokeRef.current = stroke;
-    setLiveStroke(stroke);
   };
 
   const moveStroke = (
@@ -926,26 +958,9 @@ export function NoteCanvas({
       );
       const next = { ...strokeRef.current, points: pts };
       strokeRef.current = next;
-      setLiveStroke(next);
+      paintLive(pts, cfg.color, cfg.width, cfg.opacity);
       return;
     }
-    if (currentTool !== 'pen' && currentTool !== 'highlighter') return;
-    const current = strokeRef.current;
-    if (!current) return;
-    const last = current.points[current.points.length - 1];
-    if (last && dist(last, { x, y }) < 1.5) return;
-    const cfg = toolConfigsRef.current[currentTool];
-    const isHighlighter = currentTool === 'highlighter';
-    const rawWidth = isHighlighter ? cfg.width : pressureToWidth(cfg.width, pressure);
-    const next = {
-      ...current,
-      points: [
-        ...current.points,
-        { x, y, width: rawWidth, pressure: pressure ?? undefined },
-      ],
-    };
-    strokeRef.current = next;
-    setLiveStroke(next);
   };
 
   const endStroke = (endX?: number, endY?: number) => {
@@ -1000,7 +1015,7 @@ export function NoteCanvas({
     const wasShape = currentTool === 'shape';
     strokeRef.current = null;
     shapeStartRef.current = null;
-    setLiveStroke(null);
+    clearLivePath();
     if (current && current.points.length >= 1) {
       const smoothLvl =
         currentTool === 'pen' || currentTool === 'highlighter'
@@ -1024,7 +1039,7 @@ export function NoteCanvas({
     strokeRef.current = null;
     shapeStartRef.current = null;
     lassoStartRef.current = null;
-    setLiveStroke(null);
+    clearLivePath();
     setLassoPath(null);
     setLassoRect(null);
     lassoPathRef.current = [];
@@ -1102,6 +1117,88 @@ export function NoteCanvas({
   const canInteractWithLassoGroup =
     lassoIds.size > 0 && (tool === 'select' || tool === 'lasso');
 
+  const finishInk = () => {
+    const raw = livePts.value;
+    const points = raw.map((p) => ({
+      x: p.x,
+      y: p.y,
+      width: p.width,
+      pressure: p.pressure,
+    }));
+    const color = liveColor.value;
+    const width = liveWidth.value;
+    const opacity = liveOpacity.value;
+    const mode = drawMode.value;
+    clearLivePath();
+    if (points.length === 0 || pinchingRef.current) return;
+    const currentTool = mode === 2 ? 'highlighter' : 'pen';
+    const smoothLvl = toolConfigsRef.current[currentTool].smoothing;
+    const stroke: Stroke = {
+      id: uid('stroke'),
+      points: smoothPoints(points, smoothLvl),
+      color,
+      width,
+      opacity,
+      layerId: activeLayerRef.current.id,
+      order: getNextOrder(),
+    };
+    commitStrokes([...strokesRef.current, stroke], true);
+  };
+
+  const inkWidth = (base: number, pressure?: number | null) => {
+    'worklet';
+    if (pressure == null || Number.isNaN(pressure)) return base;
+    const p = Math.min(1, Math.max(0.05, pressure));
+    return Math.max(1, base * (0.35 + p * 1.4));
+  };
+
+  const toInk = (rawX: number, rawY: number) => {
+    'worklet';
+    const s = Math.max(0.05, canvasScale.value);
+    return { x: rawX / s, y: rawY / s };
+  };
+
+  const beginInk = (rawX: number, rawY: number, pressure: number | null | undefined, mode: number) => {
+    'worklet';
+    const { x, y } = toInk(rawX, rawY);
+    const base = mode === 2 ? hiWidthSv.value : penWidthSv.value;
+    const width = mode === 2 ? base : inkWidth(base, pressure);
+    liveColor.value = mode === 2 ? hiColorSv.value : penColorSv.value;
+    liveWidth.value = base;
+    liveOpacity.value = mode === 2 ? hiOpacitySv.value : penOpacitySv.value;
+    const builder = liveBuilder.value;
+    builder.reset();
+    builder.moveTo(x, y);
+    livePath.value = builder.build();
+    notifyChange(livePath);
+    livePts.value = [{ x, y, width, pressure: pressure ?? undefined }];
+    inking.value = 1;
+  };
+
+  const extendInk = (
+    rawX: number,
+    rawY: number,
+    pressure: number | null | undefined,
+    mode: number,
+  ) => {
+    'worklet';
+    if (!inking.value) return;
+    const { x, y } = toInk(rawX, rawY);
+    const pts = livePts.value;
+    const last = pts[pts.length - 1];
+    if (last) {
+      const dx = x - last.x;
+      const dy = y - last.y;
+      if (dx * dx + dy * dy < 0.16) return;
+    }
+    const base = mode === 2 ? hiWidthSv.value : penWidthSv.value;
+    const width = mode === 2 ? base : inkWidth(base, pressure);
+    pts.push({ x, y, width, pressure: pressure ?? undefined });
+    liveBuilder.value.lineTo(x, y);
+    livePath.value = liveBuilder.value.build();
+    notifyChange(livePath);
+  };
+
   const drawGesture = Gesture.Pan()
     .enabled(!isScrollingMode)
     .minDistance(0)
@@ -1111,6 +1208,19 @@ export function NoteCanvas({
         runOnJS(cancelLiveStroke)();
         return;
       }
+      const mode = drawMode.value;
+      if (mode === 1 || mode === 2) {
+        if (!canInk.value) {
+          runOnJS(beginStroke)(e.x, e.y, e.stylusData?.pressure, e.pointerType);
+          return;
+        }
+        if (stylusOnlySv.value === 1 && e.pointerType === PointerType.TOUCH) {
+          runOnJS(beginStroke)(e.x, e.y, e.stylusData?.pressure, e.pointerType);
+          return;
+        }
+        beginInk(e.x, e.y, e.stylusData?.pressure, mode);
+        return;
+      }
       runOnJS(beginStroke)(e.x, e.y, e.stylusData?.pressure, e.pointerType);
     })
     .onUpdate((e) => {
@@ -1118,9 +1228,19 @@ export function NoteCanvas({
         runOnJS(cancelLiveStroke)();
         return;
       }
+      const mode = drawMode.value;
+      if (mode === 1 || mode === 2) {
+        extendInk(e.x, e.y, e.stylusData?.pressure, mode);
+        return;
+      }
       runOnJS(moveStroke)(e.x, e.y, e.stylusData?.pressure, e.pointerType);
     })
     .onEnd((e) => {
+      const mode = drawMode.value;
+      if ((mode === 1 || mode === 2) && inking.value) {
+        runOnJS(finishInk)();
+        return;
+      }
       runOnJS(endStroke)(e.x, e.y);
     });
 
@@ -1590,6 +1710,14 @@ export function NoteCanvas({
                   }}
                 />
               ) : null}
+              <LiveInk
+                path={livePath}
+                color={liveColor}
+                width={liveWidth}
+                opacity={liveOpacity}
+                pageWidth={pageSize.width}
+                pageHeight={pageSize.height}
+              />
             </ViewShot>
           </Animated.View>
           </View>

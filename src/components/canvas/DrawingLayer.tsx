@@ -1,5 +1,7 @@
 import { memo, useMemo } from 'react';
 import { Canvas, DashPathEffect, Path, RoundedRect, Skia } from '@shopify/react-native-skia';
+import type { SkPath } from '@shopify/react-native-skia';
+import type { SharedValue } from 'react-native-reanimated';
 import { renderSkiaStroke } from '../../skiaStrokes';
 import type { Point, Stroke } from '../../types';
 
@@ -77,3 +79,31 @@ export const DrawingLayer = memo(function DrawingLayer({
     </Canvas>
   );
 });
+
+type LiveInkProps = {
+  path: SharedValue<SkPath>;
+  color: SharedValue<string>;
+  width: SharedValue<number>;
+  opacity: SharedValue<number>;
+  pageWidth: number;
+  pageHeight: number;
+};
+
+export function LiveInk({ path, color, width, opacity, pageWidth, pageHeight }: LiveInkProps) {
+  return (
+    <Canvas
+      style={{ position: 'absolute', left: 0, top: 0, width: pageWidth, height: pageHeight }}
+      pointerEvents="none"
+    >
+      <Path
+        path={path}
+        color={color}
+        style="stroke"
+        strokeWidth={width}
+        opacity={opacity}
+        strokeCap="round"
+        strokeJoin="round"
+      />
+    </Canvas>
+  );
+}
