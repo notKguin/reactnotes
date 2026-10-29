@@ -38,6 +38,7 @@ import {
   type SmoothingLevel,
 } from '../../strokeUtils';
 import { colors, PAGE, spacing, TABLET_BREAKPOINT } from '../../theme';
+import { textLineHeight } from '../../textLayout';
 import type {
   BackgroundId,
   CanvasElement,
@@ -583,7 +584,7 @@ export function NoteCanvas({
       x,
       y,
       width: isTablet ? 340 : 220,
-      height: Math.round(textDefaults.fontSize * 1.45 + 12),
+      height: textLineHeight(textDefaults.fontSize),
       text: '',
       fontFamily: textDefaults.fontFamily,
       fontSize: textDefaults.fontSize,
@@ -1325,10 +1326,7 @@ export function NoteCanvas({
     const prevSize = Math.max(1, selectedText.fontSize);
     const ratio = fontSize / prevSize;
     const width = Math.max(80, Math.min(1400, selectedText.width * ratio));
-    const height = Math.max(
-      28,
-      Math.min(1400, (selectedText.height ?? Math.round(prevSize * 1.45 + 12)) * ratio),
-    );
+    const height = textLineHeight(fontSize);
     updateElements(
       elementsRef.current.map((e) =>
         e.id === selectedText.id ? { ...e, fontSize, width, height } : e,

@@ -12,6 +12,7 @@ import Animated, {
 import { resolveFontFamily } from '../../fonts';
 import { useSpinGesture } from '../../spinGesture';
 import { colors } from '../../theme';
+import { textLineHeight } from '../../textLayout';
 import type { TextElement } from '../../types';
 
 type Props = {
@@ -60,13 +61,13 @@ export function TextBlock({
     y.value = element.y;
     rotation.value = element.rotation ?? 0;
     width.value = element.width;
-    height.value = element.height ?? 60;
+    height.value = textLineHeight(element.fontSize);
   }, [
     element.x,
     element.y,
     element.rotation,
     element.width,
-    element.height,
+    element.fontSize,
     x,
     y,
     rotation,
@@ -102,19 +103,6 @@ export function TextBlock({
       height: height.value,
       fontSize: Math.max(8, Math.min(200, Math.round(fontSizeSv.value))),
     });
-  };
-
-  const trackFont = (nextW: number, nextH: number) => {
-    'worklet';
-    const rw = nextW / Math.max(1, startW.value);
-    const rh = nextH / Math.max(1, startH.value);
-    const ratio = Math.sqrt(Math.max(0.2, rw) * Math.max(0.2, rh));
-    const nextFont = Math.max(8, Math.min(200, startFont.value * ratio));
-    fontSizeSv.value = nextFont;
-    if (Math.abs(nextFont - sentFont.value) >= 0.8) {
-      sentFont.value = nextFont;
-      runOnJS(publishFont)(nextFont);
-    }
   };
 
   const makeMoveGesture = () =>
@@ -168,8 +156,8 @@ export function TextBlock({
       const sy = (startH.value + e.translationY / s) / Math.max(1, startH.value);
       const scale = Math.max(0.35, Math.min(6, (sx + sy) / 2));
       width.value = Math.max(80, Math.min(1400, startW.value * scale));
-      height.value = Math.max(36, Math.min(1400, startH.value * scale));
       const nextFont = Math.max(8, Math.min(200, startFont.value * scale));
+      height.value = textLineHeight(nextFont);
       fontSizeSv.value = nextFont;
       if (Math.abs(nextFont - sentFont.value) >= 0.8) {
         sentFont.value = nextFont;
@@ -188,9 +176,14 @@ export function TextBlock({
       startFont.value = fontSizeSv.value;
     })
     .onUpdate((e) => {
+      const nextFont = Math.max(8, Math.min(200, startFont.value * e.scale));
       width.value = Math.max(80, Math.min(900, startW.value * e.scale));
-      height.value = Math.max(36, Math.min(900, startH.value * e.scale));
-      trackFont(width.value, height.value);
+      height.value = textLineHeight(nextFont);
+      fontSizeSv.value = nextFont;
+      if (Math.abs(nextFont - sentFont.value) >= 0.8) {
+        sentFont.value = nextFont;
+        runOnJS(publishFont)(nextFont);
+      }
     })
     .onEnd(() => {
       runOnJS(commit)();
@@ -237,7 +230,7 @@ export function TextBlock({
           <View
             style={[
               styles.box,
-              { minHeight: element.height ?? 60, justifyContent },
+              { minHeight: textLineHeight(liveFont), justifyContent },
               styles.selected,
             ]}
           >
@@ -267,7 +260,7 @@ export function TextBlock({
               onSelect();
             }}
             disabled={!canInteract}
-            style={[styles.box, { minHeight: element.height ?? 60, justifyContent }]}
+            style={[styles.box, { minHeight: textLineHeight(liveFont), justifyContent }]}
           >
             <View pointerEvents="none">
               <Text style={[styles.input, textStyle]}>{element.text || 'Текст…'}</Text>
